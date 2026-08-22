@@ -3,14 +3,15 @@ name = "tensorloom"
 version = "0.1.0"
 description = "TensorLoom — A GPU-Efficient Domain-Specific Language for AI Training"
 requires-python = ">=3.11"
-license = {text = "MIT"}
-authors = [{ name = "TensorLoom Team" }]
+license = {text = "GPL-3.0-or-later"}
+authors = [{ name = "techxsarwar", email = "techxsarwar@users.noreply.github.com" }]
 readme = "README.md"
-keywords = ["deep-learning", "compiler", "pytorch", "triton", "distributed-training", "dsl"]
+keywords = ["deep-learning", "compiler", "pytorch", "triton", "distributed-training", "dsl", "gpu"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
