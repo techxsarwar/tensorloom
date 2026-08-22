@@ -229,40 +229,121 @@ def _cmd_run(source: str, filepath: str) -> None:
 
 
 def _cmd_info(source: str, filepath: str) -> None:
-    """Estimate GPU memory usage for the program."""
+    """Estimate GPU memory usage and parameter count for the program."""
     print(f"[info] Analyzing: {filepath}")
     tokens = _lex(source, filepath)
     ast = _parse(tokens)
 
-    # Simple heuristic memory estimation
-    total_params = 0
-    layers_info: list[tuple[str, int]] = []
+    from tensorloom.parser.ast_nodes import (
+        ModelDefinition, NMLModel, ImportStatement, FunctionCall, Identifier, NumberLiteral
+    )
+
+    models_to_analyze: list[tuple[str, list, dict]] = []
 
     for stmt in ast.statements:
-        from tensorloom.parser.ast_nodes import ModelDefinition, FunctionCall, Identifier, NumberLiteral
         if isinstance(stmt, ModelDefinition):
-            print(f"\n   Model: {stmt.name}")
-            for layer in stmt.layers:
-                if isinstance(layer.layer_type, FunctionCall):
-                    call = layer.layer_type
-                    if isinstance(call.callee, Identifier) and call.callee.name == "Linear":
-                        dims = [a for a in call.args if isinstance(a, NumberLiteral)]
-                        if len(dims) >= 2:
-                            params = int(dims[0].value) * int(dims[1].value) + int(dims[1].value)
-                            total_params += params
-                            layers_info.append((layer.name, params))
+            models_to_analyze.append((stmt.name, stmt.layers, {}))
+        elif isinstance(stmt, NMLModel):
+            # Resolve config dict
+            config_vals = {}
+            for k, v in stmt.config.items():
+                if isinstance(v, NumberLiteral):
+                    config_vals[k] = v.value
+                elif hasattr(v, "value"):
+                    config_vals[k] = v.value
+            models_to_analyze.append((stmt.name, stmt.layers, config_vals))
+        elif isinstance(stmt, ImportStatement) and stmt.is_nml:
+            # Cross-file NML import
+            nml_filename = ".".join(stmt.module_path[:-1]) + ".nml"
+            source_dir = os.path.dirname(os.path.abspath(filepath)) or "."
+            nml_path = os.path.join(source_dir, nml_filename)
+            if os.path.exists(nml_path):
+                with open(nml_path, "r", encoding="utf-8") as f:
+                    nml_src = f.read()
+                nml_toks = _lex(nml_src, nml_filename)
+                nml_ast = _parse(nml_toks)
+                for s in nml_ast.statements:
+                    if isinstance(s, NMLModel):
+                        cfg = {k: getattr(v, "value", v) for k, v in s.config.items()}
+                        name = stmt.alias or s.name
+                        models_to_analyze.append((name, s.layers, cfg))
 
-            for name, params in layers_info:
-                mem_mb = (params * 4) / (1024 * 1024)  # float32
-                print(f"   +-- {name}: {params:,} params ({mem_mb:.2f} MB)")
+    def _resolve_val(node, config: dict):
+        if isinstance(node, NumberLiteral):
+            return node.value
+        elif isinstance(node, Identifier) and node.name in config:
+            return config[node.name]
+        elif hasattr(node, "value"):
+            return node.value
+        return None
 
-            total_mem = (total_params * 4) / (1024 * 1024)
-            train_mem = total_mem * 3  # params + gradients + optimizer states
-            print(f"   |")
-            print(f"   +-- Total parameters: {total_params:,}")
-            print(f"   +-- Model memory (fp32): {total_mem:.2f} MB")
-            print(f"   +-- Training memory est.: {train_mem:.2f} MB")
-            print(f"   +-- Training memory (fp16): {train_mem / 2:.2f} MB")
+    for model_name, layers, config in models_to_analyze:
+        total_params = 0
+        layers_info: list[tuple[str, int, str]] = []
+
+        print(f"\n   Model: {model_name}")
+        for layer in layers:
+            call = layer.layer_type if isinstance(layer.layer_type, FunctionCall) else None
+            if not call or not isinstance(call.callee, Identifier):
+                continue
+
+            ltype = call.callee.name
+            params = 0
+
+            # Linear(in_features, out_features)
+            if ltype == "Linear":
+                args = [_resolve_val(a, config) for a in call.args if _resolve_val(a, config) is not None]
+                if len(args) >= 2:
+                    in_f, out_f = int(args[0]), int(args[1])
+                    params = in_f * out_f + out_f  # weights + bias
+
+            # Conv2d(in_channels, out_channels, kernel_size, ...)
+            elif ltype == "Conv2d":
+                args = [_resolve_val(a, config) for a in call.args if _resolve_val(a, config) is not None]
+                ksize = 3
+                if "kernel_size" in call.kwargs:
+                    ksize = int(_resolve_val(call.kwargs["kernel_size"], config) or 3)
+                elif len(args) >= 3:
+                    ksize = int(args[2])
+                if len(args) >= 2:
+                    in_c, out_c = int(args[0]), int(args[1])
+                    params = in_c * out_c * ksize * ksize + out_c
+
+            # MultiheadAttention / MultiHeadAttention(embed_dim, num_heads)
+            elif ltype in ("MultiheadAttention", "MultiHeadAttention"):
+                args = [_resolve_val(a, config) for a in call.args if _resolve_val(a, config) is not None]
+                if len(args) >= 1:
+                    dim = int(args[0])
+                    params = 4 * (dim * dim + dim)  # Q, K, V, Out projections
+
+            # Embedding(num_embeddings, embedding_dim)
+            elif ltype == "Embedding":
+                args = [_resolve_val(a, config) for a in call.args if _resolve_val(a, config) is not None]
+                if len(args) >= 2:
+                    num_e, e_dim = int(args[0]), int(args[1])
+                    params = num_e * e_dim
+
+            # LayerNorm(normalized_shape) / BatchNorm2d(num_features)
+            elif ltype in ("LayerNorm", "BatchNorm2d", "BatchNorm1d"):
+                args = [_resolve_val(a, config) for a in call.args if _resolve_val(a, config) is not None]
+                if len(args) >= 1:
+                    dim = int(args[0])
+                    params = 2 * dim  # gamma + beta
+
+            total_params += params
+            layers_info.append((layer.name, params, ltype))
+
+        for name, params, ltype in layers_info:
+            mem_mb = (params * 4) / (1024 * 1024)  # float32
+            print(f"   +-- {name} ({ltype}): {params:,} params ({mem_mb:.3f} MB)")
+
+        total_mem = (total_params * 4) / (1024 * 1024)
+        train_mem = total_mem * 3  # params + gradients + optimizer states
+        print(f"   |")
+        print(f"   +-- Total Parameters: {total_params:,}")
+        print(f"   +-- Model Memory (FP32): {total_mem:.2f} MB")
+        print(f"   +-- Training Memory Est.: {train_mem:.2f} MB")
+        print(f"   +-- Training Memory (FP16/BF16): {train_mem / 2:.2f} MB")
 
     # Shape flow analysis
     shape_engine = ShapeInferenceEngine()
