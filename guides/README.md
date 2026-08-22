@@ -2,31 +2,51 @@
 
 Welcome to the official documentation hub for **TensorLoom** — the high-performance, GPU-efficient domain-specific language for AI training.
 
-Choose your learning track below:
+Choose the learning style that fits you best:
 
 ---
 
-## 🧭 Choose Your Track
+## 🧭 Choose Your Learning Track
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                 TensorLoom Learning Hub                     │
-├──────────────────────────────┬──────────────────────────────┤
-│  🚀 Beginner / Fun Track     │  🎓 Professional Track       │
-│  (Explained with intuitive   │  (Rigorous math, systems,    │
-│   analogies & 5-min guides)  │   compiler IR, and GPU arch) │
-├──────────────────────────────┼──────────────────────────────┤
-│  👉 [Start Beginner Track](#-beginner--kid-friendly-track)  │  👉 [Start Professional Track](professional/README.md) │
-└──────────────────────────────┴──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TensorLoom Learning Hub                           │
+├─────────────────────────┬─────────────────────────┬─────────────────────────┤
+│  ⚡ Bite-Sized Track    │  🚀 Intuitive Track     │  🎓 Professional Track  │
+│  (1–2 min micro-lessons │  (LEGO, superhero, and  │  (Rigorous math, GPU    │
+│   zero-fluff cheat cards)│   intuitive analogies)  │   systems, compiler IR) │
+├─────────────────────────┼─────────────────────────┼─────────────────────────┤
+│  👉 [Start 2-Min Crash] │  👉 [Start Intuitive]   │  👉 [Start Pro Track]   │
+│     (bite_sized/README) │     (#-intuitive-track) │     (professional/READ) │
+└─────────────────────────┴─────────────────────────┴─────────────────────────┘
 ```
 
 ---
 
-## 🚀 Beginner & Kid-Friendly Track
+## ⚡ 1. Bite-Sized Micro-Lessons (1–2 Min Each)
 
-*Learn AI programming using intuitive analogies: LEGO builders, robotic elves, superhero teams, waterslides, and toddler shape-sorters!*
+*Ultra-concise, punchy cards. Learn everything in under 15 minutes.*
 
-| Chapter | Guide Link | What You Will Discover |
+| # | Micro-Lesson | Time | Concept Covered |
+| :-: | :--- | :-: | :--- |
+| **01** | [**Hello TensorLoom**](bite_sized/01_hello_tensorloom.md) | 1 min | 10-line complete program & 3 essential CLI commands |
+| **02** | [**Variables & Types**](bite_sized/02_variables_and_types.md) | 1 min | Declaring data with `let` and type annotations |
+| **03** | [**The Pipe Operator (`\|>`)**](bite_sized/03_pipe_operator.md) | 1 min | Clean left-to-right functional dataflow |
+| **04** | [**Imperative Models**](bite_sized/04_imperative_models.md) | 2 min | Writing `model` classes with `layer` and `fn forward` |
+| **05** | [**Declarative NML**](bite_sized/05_declarative_nml.md) | 2 min | The 4 blocks of `.nml` blueprints and auto-rewrites |
+| **06** | [**The `train` Block**](bite_sized/06_train_block.md) | 1 min | Automated training loops, AMP, & checkpoints |
+| **07** | [**Cross-File Imports**](bite_sized/07_cross_file_imports.md) | 1 min | `import arch.nml as Alias` with overrides |
+| **08** | [**Inline Triton Kernels**](bite_sized/08_triton_kernels.md) | 2 min | Custom GPU accelerator code with `@kernel` |
+| **09** | [**Multi-GPU DDP**](bite_sized/09_distributed_ddp.md) | 1 min | 1-line cluster scaling with `distributed = true` |
+| **10** | [**Shape Checking & Info**](bite_sized/10_shape_checking.md) | 1 min | Catching bugs in <3ms with `tlc check` & `tlc info` |
+
+---
+
+## 🚀 2. Intuitive & Kid-Friendly Adventure Track
+
+*Deep-dive conceptual lessons using intuitive analogies: LEGO builders, robotic elves, and superhero teams.*
+
+| Chapter | Adventure Guide | What You Will Discover |
 | :--- | :--- | :--- |
 | **01** | [**🚀 Why TensorLoom?**](01_why_tensorloom.md) | Why normal AI code is like building LEGO with oven mitts, and how TensorLoom gives you superpowers. |
 | **02** | [**⚡ 5-Minute Quickstart**](02_quickstart_tutorial.md) | Build your very first number-reading robot brain in 60 seconds from scratch! |
@@ -39,9 +59,9 @@ Choose your learning track below:
 
 ---
 
-## 🎓 Professional & Systems Engineering Track
+## 🎓 3. Professional Systems Engineering Track
 
-*For ML researchers, systems engineers, and compiler architects seeking a formal, deep-dive curriculum.*
+*For ML researchers, systems engineers, and compiler architects seeking a formal, mathematical deep-dive.*
 
 | Module | Module Link | Technical Focus |
 | :--- | :--- | :--- |
@@ -59,7 +79,7 @@ Choose your learning track below:
 ## 💻 Quick CLI Reference
 
 ```bash
-# Static verification & type checking
+# Static verification & type checking (<3ms)
 python -m tensorloom check path/to/script.tl
 
 # Structural AST inspection & parameter calculation
