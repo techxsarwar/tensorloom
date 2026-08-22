@@ -1,0 +1,20 @@
+// TensorLoom Neural Markup — Transformer Block
+// Pure architecture definition — no training logic allowed in .nml
+
+@model TransformerBlock:
+    @config:
+        d_model  = 512
+        n_heads  = 8
+        d_ff     = 2048
+        dropout  = 0.1
+
+    @layers:
+        attention   = MultiHeadAttention(d_model, n_heads)
+        norm1       = LayerNorm(d_model)
+        feedforward = Sequential(Linear(d_model, d_ff), GELU(), Linear(d_ff, d_model))
+        norm2       = LayerNorm(d_model)
+
+    @forward(x):
+        x = x + attention(norm1(x)) |> dropout
+        x = x + feedforward(norm2(x)) |> dropout
+        return x
