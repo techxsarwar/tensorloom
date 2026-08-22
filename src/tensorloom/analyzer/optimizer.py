@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from tensorloom.parser.ast_nodes import (
     ASTNode,
+    AssignStatement,
     BinaryOp,
     FunctionCall,
     FunctionDef,
@@ -76,8 +77,19 @@ class ASTOptimizer:
         elif isinstance(node, PipeExpression):
             self._analyze_pipe(node)
 
+        elif isinstance(node, FunctionDef):
+            for stmt in node.body:
+                self._analyze_node(stmt)
+
         elif isinstance(node, LetStatement):
             if isinstance(node.value, BinaryOp):
+                self._detect_arithmetic_fusion(node.value, node.line)
+            self._analyze_node(node.value)
+
+        elif isinstance(node, AssignStatement):
+            if isinstance(node.value, PipeExpression):
+                self._analyze_pipe(node.value)
+            elif isinstance(node.value, BinaryOp):
                 self._detect_arithmetic_fusion(node.value, node.line)
             self._analyze_node(node.value)
 

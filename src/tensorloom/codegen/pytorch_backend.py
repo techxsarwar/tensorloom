@@ -27,11 +27,14 @@ from tensorloom.parser.ast_nodes import (
     IfStatement,
     ImportStatement,
     IndexAccess,
+    KernelDef,
+    KernelParam,
     LayerDeclaration,
     LetStatement,
     ListLiteral,
     MemberAccess,
     ModelDefinition,
+    NMLModel,
     NoneLiteral,
     NumberLiteral,
     Parameter,
@@ -134,11 +137,20 @@ DEVICE_MAP: dict[str, str] = {
 class PyTorchBackend:
     """Transpiles a TensorLoom AST into executable PyTorch Python code."""
 
-    def __init__(self) -> None:
+    def __init__(self, source_dir: str = ".") -> None:
         self.emitter = CodeEmitter()
+        self.source_dir = source_dir  # directory for resolving .nml imports
         self._model_names: set[str] = set()
         self._has_training = False
         self._precision: str | None = None
+        self._checkpointed_models: set[str] = set()  # models needing gradient checkpointing
+        self._has_checkpoint = False
+        self._is_distributed = False  # DDP mode
+        self._distributed_models: set[str] = set()  # instance names that need DDP wrapping
+        self._instance_to_class: dict[str, str] = {}  # { "net": "Net" }
+        self._has_kernels = False  # Triton kernel mode
+        self._kernel_names: set[str] = set()  # kernel function names
+        self._nml_imports: dict[str, str] = {}  # { alias: nml_file_path }
 
     # ══════════════════════════════════════════════════════════
     #  Public API
@@ -151,6 +163,9 @@ class PyTorchBackend:
 
         # Emit standard imports
         self._emit_standard_imports()
+
+        if self._is_distributed:
+            return self._generate_distributed(program)
 
         # Emit device setup
         self.emitter.blank()
@@ -165,6 +180,253 @@ class PyTorchBackend:
 
         return self.emitter.build()
 
+    def _generate_distributed(self, program: Program) -> str:
+        """Generate DDP-wrapped PyTorch code with setup/cleanup/torchrun entry."""
+        # ── DDP utility functions ──
+        self.emitter.blank()
+        self.emitter.blank()
+        self.emitter.comment("═══ TensorLoom Distributed Data Parallel (DDP) ═══")
+        self.emitter.blank()
+
+        # setup_ddp()
+        self.emitter.line("def setup_ddp():")
+        self.emitter.indent()
+        self.emitter.docstring("Initialize distributed process group. Auto-injected by TensorLoom.")
+        self.emitter.line('dist.init_process_group(backend="nccl", init_method="env://")')
+        self.emitter.line('local_rank = int(os.environ["LOCAL_RANK"])')
+        self.emitter.line("torch.cuda.set_device(local_rank)")
+        self.emitter.line("return local_rank")
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # cleanup_ddp()
+        self.emitter.line("def cleanup_ddp():")
+        self.emitter.indent()
+        self.emitter.docstring("Tear down distributed process group.")
+        self.emitter.line("dist.destroy_process_group()")
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # Emit model definitions at module level (outside train_distributed)
+        for stmt in program.statements:
+            if isinstance(stmt, ModelDefinition):
+                self._emit_statement(stmt)
+            elif isinstance(stmt, ImportStatement):
+                self._emit_statement(stmt)
+
+        # train_distributed() function
+        self.emitter.blank()
+        self.emitter.line("def train_distributed():")
+        self.emitter.indent()
+        self.emitter.docstring("Main distributed training entry point. Launch with torchrun.")
+        self.emitter.line("local_rank = setup_ddp()")
+        self.emitter.line(f'print(f"TensorLoom DDP -- rank={{dist.get_rank()}}/{{dist.get_world_size()}} on GPU {{local_rank}}")')
+        self.emitter.blank()
+
+        # Emit non-model, non-train statements inside the function
+        for stmt in program.statements:
+            if isinstance(stmt, (ModelDefinition, ImportStatement)):
+                continue  # already emitted at module level
+            elif isinstance(stmt, TrainBlock):
+                self._emit_train_distributed(stmt)
+            elif isinstance(stmt, LetStatement):
+                # Model instantiation needs DDP wrapping
+                if isinstance(stmt.value, FunctionCall):
+                    callee = stmt.value.callee
+                    if isinstance(callee, Identifier) and callee.name in self._model_names:
+                        self._emit_let_distributed(stmt)
+                        continue
+                self._emit_statement(stmt)
+            else:
+                self._emit_statement(stmt)
+
+        self.emitter.blank()
+        self.emitter.line("cleanup_ddp()")
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # torchrun entry point
+        self.emitter.blank()
+        self.emitter.comment("═══ Entry Point ═══")
+        self.emitter.comment('Launch: torchrun --nproc_per_node=NUM_GPUS script.py')
+        self.emitter.line('if __name__ == "__main__":')
+        self.emitter.indent()
+        self.emitter.line('if "LOCAL_RANK" in os.environ:')
+        self.emitter.indent()
+        self.emitter.line("train_distributed()")
+        self.emitter.dedent()
+        self.emitter.line("else:")
+        self.emitter.indent()
+        self.emitter.line('print("[TensorLoom] Launch with: torchrun --nproc_per_node=<NUM_GPUS> " + __file__)')
+        self.emitter.line('print("             Falling back to single-GPU mode.")')
+        self.emitter.line('# Single-GPU fallback')
+        self.emitter.line('os.environ["LOCAL_RANK"] = "0"')
+        self.emitter.line('os.environ["RANK"] = "0"')
+        self.emitter.line('os.environ["WORLD_SIZE"] = "1"')
+        self.emitter.line('os.environ["MASTER_ADDR"] = "localhost"')
+        self.emitter.line('os.environ["MASTER_PORT"] = "29500"')
+        self.emitter.line("train_distributed()")
+        self.emitter.dedent()
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        return self.emitter.build()
+
+    def _emit_let_distributed(self, node: LetStatement) -> None:
+        """Emit model instantiation with DDP wrapping."""
+        val = self._emit_expr(node.value)
+        self.emitter.comment(f"Model instantiation with DDP wrapping")
+        self.emitter.line(f"{node.name} = {val}.to(local_rank)")
+        self.emitter.line(f"{node.name} = torch.compile({node.name}, mode=\"max-autotune\")  "
+                          f"# TensorLoom: Automatic Kernel Fusion")
+        self.emitter.line(f"{node.name} = DDP({node.name}, device_ids=[local_rank])")
+        self.emitter.blank()
+
+    def _emit_train_distributed(self, node: TrainBlock) -> None:
+        """Emit a DDP-aware training loop with DistributedSampler."""
+        self.emitter.blank()
+        self.emitter.comment("═══ Distributed Training Loop ═══")
+
+        # Extract config
+        epochs_expr = node.params.get("epochs")
+        epochs = self._emit_expr(epochs_expr) if epochs_expr else "10"
+
+        optimizer_node = node.params.get("optimizer")
+        loss_node = node.params.get("loss")
+        precision_node = node.params.get("precision")
+        batch_size_node = node.params.get("batch_size")
+
+        batch_size = "64"
+        if batch_size_node:
+            batch_size = self._emit_expr(batch_size_node)
+
+        precision = None
+        if precision_node and isinstance(precision_node, Identifier):
+            precision = precision_node.name
+
+        # DistributedSampler setup
+        self.emitter.comment("Distributed sampler — ensures each GPU gets unique data slices")
+        self.emitter.line(f"sampler = DistributedSampler(")
+        self.emitter.indent()
+        self.emitter.line(f"{node.data_name},")
+        self.emitter.line(f"num_replicas=dist.get_world_size(),")
+        self.emitter.line(f"rank=dist.get_rank(),")
+        self.emitter.line(f"shuffle=True,")
+        self.emitter.dedent()
+        self.emitter.line(")")
+        self.emitter.line(f"loader = DataLoader({node.data_name}, batch_size={batch_size}, sampler=sampler)")
+        self.emitter.blank()
+
+        # Optimizer
+        if optimizer_node and isinstance(optimizer_node, FunctionCall):
+            callee = optimizer_node.callee
+            if isinstance(callee, Identifier):
+                opt_class = OPTIMIZER_MAP.get(callee.name, f"optim.{callee.name}")
+                kwargs = ", ".join(f"{k}={self._emit_expr(v)}" for k, v in optimizer_node.kwargs.items())
+                self.emitter.line(
+                    f"optimizer = {opt_class}({node.model_name}.parameters(), {kwargs})"
+                )
+        else:
+            self.emitter.line(f"optimizer = optim.Adam({node.model_name}.parameters(), lr=0.001)")
+
+        # Loss
+        if loss_node and isinstance(loss_node, Identifier):
+            loss_class = LOSS_MAP.get(loss_node.name, f"nn.{loss_node.name}()")
+            self.emitter.line(f"criterion = {loss_class}()")
+        else:
+            self.emitter.line("criterion = nn.CrossEntropyLoss()")
+
+        # Mixed precision
+        use_amp = precision in ("fp16", "float16", "bf16", "bfloat16")
+        amp_dtype = DTYPE_MAP.get(precision, "torch.float16") if precision else None
+
+        if use_amp:
+            self.emitter.line(f'scaler = GradScaler("cuda")')
+
+        # Checkpoint frequency
+        ckpt_freq = None
+        if node.checkpoint_config:
+            ckpt_freq = self._emit_expr(node.checkpoint_config.frequency)
+
+        # Training loop
+        self.emitter.blank()
+        self.emitter.line(f"for epoch in range({epochs}):")
+        self.emitter.indent()
+
+        # CRITICAL: set_epoch on sampler to reshuffle data per epoch across ranks
+        self.emitter.comment("Critical: re-shuffle data across ranks each epoch")
+        self.emitter.line("sampler.set_epoch(epoch)")
+        self.emitter.blank()
+
+        self.emitter.line(f"{node.model_name}.train()")
+        self.emitter.line("running_loss = 0.0")
+        self.emitter.line("correct = 0")
+        self.emitter.line("total = 0")
+        self.emitter.blank()
+
+        self.emitter.line("for batch_idx, (inputs, targets) in enumerate(loader):")
+        self.emitter.indent()
+
+        self.emitter.line("inputs, targets = inputs.to(local_rank), targets.to(local_rank)")
+        self.emitter.line("optimizer.zero_grad()")
+        self.emitter.blank()
+
+        if use_amp:
+            self.emitter.line(f"with autocast(device_type='cuda', dtype={amp_dtype}):")
+            self.emitter.indent()
+            self.emitter.line(f"outputs = {node.model_name}(inputs)")
+            self.emitter.line("loss = criterion(outputs, targets)")
+            self.emitter.dedent()
+            self.emitter.blank()
+            self.emitter.line("scaler.scale(loss).backward()")
+            self.emitter.line("scaler.step(optimizer)")
+            self.emitter.line("scaler.update()")
+        else:
+            self.emitter.line(f"outputs = {node.model_name}(inputs)")
+            self.emitter.line("loss = criterion(outputs, targets)")
+            self.emitter.line("loss.backward()")
+            self.emitter.line("optimizer.step()")
+
+        self.emitter.blank()
+        self.emitter.line("running_loss += loss.item()")
+        self.emitter.line("_, predicted = outputs.max(1)")
+        self.emitter.line("total += targets.size(0)")
+        self.emitter.line("correct += predicted.eq(targets).sum().item()")
+
+        self.emitter.dedent()  # end batch loop
+        self.emitter.blank()
+
+        # Epoch metrics
+        self.emitter.line("epoch_loss = running_loss / max(total, 1)")
+        self.emitter.line("accuracy = correct / max(total, 1)")
+
+        # Weight snapshot — only rank 0 saves to avoid file conflicts
+        if ckpt_freq:
+            self.emitter.blank()
+            self.emitter.comment("Weight Snapshot — only rank 0 saves")
+            self.emitter.line(f"if dist.get_rank() == 0 and (epoch + 1) % {ckpt_freq} == 0:")
+            self.emitter.indent()
+            self.emitter.line(f'torch.save({node.model_name}.module.state_dict(), '
+                              f'f"checkpoint_epoch_{{epoch+1}}.pt")')
+            self.emitter.line(f'print(f"  [snapshot] Saved checkpoint_epoch_{{epoch+1}}.pt")')
+            self.emitter.dedent()
+
+        # Callbacks — only rank 0 prints to avoid duplicated output
+        for cb in node.callbacks:
+            self.emitter.blank()
+            self.emitter.line("if dist.get_rank() == 0:")
+            self.emitter.indent()
+            self._emit_train_callback(cb, node.model_name)
+            self.emitter.dedent()
+
+        self.emitter.dedent()  # end epoch loop
+        self.emitter.blank()
+
+        self.emitter.line("if dist.get_rank() == 0:")
+        self.emitter.indent()
+        self.emitter.line('print("\\nDistributed training complete.")')
+        self.emitter.dedent()
+
     # ══════════════════════════════════════════════════════════
     #  Scanning Pass
     # ══════════════════════════════════════════════════════════
@@ -172,14 +434,42 @@ class PyTorchBackend:
     def _scan_program(self, program: Program) -> None:
         """Pre-scan the AST to determine required imports and features."""
         for stmt in program.statements:
-            if isinstance(stmt, ModelDefinition):
+            if isinstance(stmt, KernelDef):
+                self._has_kernels = True
+                self._kernel_names.add(stmt.name)
+            elif isinstance(stmt, NMLModel):
                 self._model_names.add(stmt.name)
+            elif isinstance(stmt, ModelDefinition):
+                self._model_names.add(stmt.name)
+            elif isinstance(stmt, ImportStatement) and stmt.is_nml and stmt.alias:
+                # Cross-file NML import: register alias as a model name
+                nml_filename = ".".join(stmt.module_path[:-1]) + ".nml"
+                self._nml_imports[stmt.alias] = nml_filename
+                self._model_names.add(stmt.alias)
+            elif isinstance(stmt, LetStatement):
+                # Detect model instantiation: let net = Net()
+                if isinstance(stmt.value, FunctionCall):
+                    callee = stmt.value.callee
+                    if isinstance(callee, Identifier) and callee.name in self._model_names:
+                        self._instance_to_class[stmt.name] = callee.name
             elif isinstance(stmt, TrainBlock):
                 self._has_training = True
                 if "precision" in stmt.params:
                     p = stmt.params["precision"]
                     if isinstance(p, Identifier):
                         self._precision = p.name
+                # Detect gradient checkpointing — resolve instance to class
+                if stmt.checkpoint_config is not None:
+                    self._has_checkpoint = True
+                    class_name = self._instance_to_class.get(
+                        stmt.model_name, stmt.model_name
+                    )
+                    self._checkpointed_models.add(class_name)
+                # Detect distributed training
+                dist_node = stmt.params.get("distributed")
+                if isinstance(dist_node, BooleanLiteral) and dist_node.value:
+                    self._is_distributed = True
+                    self._distributed_models.add(stmt.model_name)
 
     def _emit_standard_imports(self) -> None:
         """Emit the required Python imports."""
@@ -195,6 +485,19 @@ class PyTorchBackend:
 
         if self._model_names:
             self.emitter.add_import("import torch.nn.functional as F")
+
+        if self._has_checkpoint:
+            self.emitter.add_import("from torch.utils.checkpoint import checkpoint as activation_checkpoint")
+
+        if self._is_distributed:
+            self.emitter.add_import("import os")
+            self.emitter.add_import("import torch.distributed as dist")
+            self.emitter.add_import("from torch.nn.parallel import DistributedDataParallel as DDP")
+            self.emitter.add_import("from torch.utils.data.distributed import DistributedSampler")
+
+        if self._has_kernels:
+            self.emitter.add_import("import triton")
+            self.emitter.add_import("import triton.language as tl")
 
     # ══════════════════════════════════════════════════════════
     #  Statement Emission
@@ -222,14 +525,371 @@ class PyTorchBackend:
             self._emit_for(node)
         elif isinstance(node, ExpressionStatement):
             self._emit_expr_stmt(node)
+        elif isinstance(node, KernelDef):
+            self._emit_kernel(node)
+        elif isinstance(node, NMLModel):
+            self._emit_nml_model(node)
         else:
             self.emitter.comment(f"[tlc] Unsupported node: {type(node).__name__}")
 
     # ── import ────────────────────────────────────────────────
 
     def _emit_import(self, node: ImportStatement) -> None:
-        path = ".".join(node.module_path)
-        self.emitter.comment(f"TensorLoom import: {path}")
+        if node.is_nml and node.alias:
+            # Cross-file NML import: sub-compile the .nml file
+            self._emit_nml_import(node)
+        else:
+            path = ".".join(node.module_path)
+            self.emitter.comment(f"TensorLoom import: {path}")
+
+    def _emit_nml_import(self, node: ImportStatement) -> None:
+        """Sub-compile a .nml file and inject its generated class inline."""
+        import os
+        nml_filename = ".".join(node.module_path[:-1]) + ".nml"
+        nml_path = os.path.join(self.source_dir, nml_filename)
+
+        if not os.path.exists(nml_path):
+            self.emitter.comment(
+                f"[ERROR] NML file not found: {nml_path}"
+            )
+            self.emitter.comment(
+                f"  import {'.'.join(node.module_path)} as {node.alias}"
+            )
+            return
+
+        # Read and sub-compile the .nml file
+        with open(nml_path, "r", encoding="utf-8") as f:
+            nml_source = f.read()
+
+        from tensorloom.lexer.lexer import Lexer
+        from tensorloom.parser.parser import Parser
+
+        nml_tokens = Lexer(nml_source, filename=nml_filename).tokenize()
+        nml_ast = Parser(nml_tokens).parse()
+
+        # Find the NMLModel node(s) and emit them
+        self.emitter.blank()
+        self.emitter.comment(f"=== NML Import: {nml_filename} as {node.alias} ===")
+
+        for stmt in nml_ast.statements:
+            if isinstance(stmt, NMLModel):
+                # If there's an alias, rename the class
+                original_name = stmt.name
+                if node.alias and node.alias != original_name:
+                    stmt.name = node.alias
+                self._emit_nml_model(stmt)
+                # Restore original name (don't mutate permanently)
+                stmt.name = original_name
+                break  # Only import the first model definition
+
+        self.emitter.blank()
+
+    # ── @kernel → Triton JIT kernel + launcher ────────────────
+
+    def _emit_kernel(self, node: KernelDef) -> None:
+        """Emit a @triton.jit kernel and an auto-generated launcher wrapper."""
+        self.emitter.blank()
+        self.emitter.comment(f"═══ TensorLoom Triton Kernel: {node.name} ═══")
+        self.emitter.blank()
+
+        # ── 1. Emit @triton.jit decorated kernel function ──
+        self.emitter.line("@triton.jit")
+
+        # Build parameter list with tl.constexpr annotations
+        param_strs: list[str] = []
+        constexpr_params: list[str] = []
+        pointer_params: list[str] = []
+        scalar_params: list[str] = []
+
+        for p in node.params:
+            if p.is_constexpr:
+                param_strs.append(f"{p.name}: tl.constexpr")
+                constexpr_params.append(p.name)
+            elif p.name.endswith("_ptr"):
+                param_strs.append(p.name)
+                pointer_params.append(p.name)
+            else:
+                param_strs.append(p.name)
+                scalar_params.append(p.name)
+
+        self.emitter.line(f"def {node.name}({', '.join(param_strs)}):")
+        self.emitter.indent()
+        self.emitter.docstring(f"TensorLoom Triton kernel: {node.name}")
+
+        # Emit kernel body — transpile let statements to plain assignments
+        for stmt in node.body:
+            self._emit_kernel_statement(stmt)
+
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # ── 2. Auto-generate launcher wrapper ──
+        # The launcher handles: grid calculation, pointer extraction, kernel dispatch
+        launcher_name = f"{node.name}_launcher"
+
+        # Build launcher params: replace _ptr params with tensor names
+        launcher_params: list[str] = []
+        for p in node.params:
+            if p.is_constexpr:
+                launcher_params.append(f"{p.name}=1024")  # sensible default
+            elif p.name.endswith("_ptr"):
+                # Convert x_ptr → x (tensor argument)
+                tensor_name = p.name.removesuffix("_ptr")
+                launcher_params.append(tensor_name)
+            else:
+                launcher_params.append(p.name)
+
+        self.emitter.line(f"def {launcher_name}({', '.join(launcher_params)}):")
+        self.emitter.indent()
+        self.emitter.docstring(
+            f"Auto-generated launcher for Triton kernel '{node.name}'.\n"
+            f"    Computes grid dimensions and dispatches the kernel."
+        )
+
+        # Determine the size variable — use first scalar param or infer from first pointer
+        size_var = None
+        for p in node.params:
+            if not p.is_constexpr and not p.name.endswith("_ptr"):
+                size_var = p.name
+                break
+
+        # If there's a constexpr BLOCK_SIZE, generate grid with cdiv
+        block_param = None
+        for p in constexpr_params:
+            if "BLOCK" in p.upper() or "SIZE" in p.upper():
+                block_param = p
+                break
+
+        if size_var and block_param:
+            self.emitter.line(
+                f"grid = lambda meta: (triton.cdiv({size_var}, meta['{block_param}']),)"
+            )
+        elif size_var:
+            self.emitter.line(
+                f"grid = ({size_var},)"
+            )
+        else:
+            self.emitter.comment("Grid: user must specify grid dimensions")
+            self.emitter.line("grid = (1,)")
+
+        # Output tensor allocation if there are output pointers
+        output_ptrs = [p for p in pointer_params if p.startswith(("z_ptr", "out_ptr", "output_ptr", "result_ptr", "c_ptr"))]
+        if output_ptrs:
+            # Infer output shape from first input pointer
+            first_input = [p for p in pointer_params if p not in output_ptrs]
+            if first_input:
+                first_tensor = first_input[0].removesuffix("_ptr")
+                for op in output_ptrs:
+                    out_tensor = op.removesuffix("_ptr")
+                    self.emitter.line(
+                        f"{out_tensor} = torch.empty_like({first_tensor})"
+                    )
+
+        # Build kernel call arguments
+        kernel_args: list[str] = []
+        for p in node.params:
+            if p.is_constexpr:
+                kernel_args.append(f"{p.name}={p.name}")
+            elif p.name.endswith("_ptr"):
+                tensor_name = p.name.removesuffix("_ptr")
+                kernel_args.append(tensor_name)
+            else:
+                kernel_args.append(p.name)
+
+        self.emitter.line(f"{node.name}[grid]({', '.join(kernel_args)})")
+
+        # Return output tensors if any
+        if output_ptrs:
+            out_names = [p.removesuffix("_ptr") for p in output_ptrs]
+            self.emitter.line(f"return {', '.join(out_names)}")
+        else:
+            # In-place kernel, return first input
+            if pointer_params:
+                first = pointer_params[0].removesuffix("_ptr")
+                self.emitter.line(f"return {first}")
+
+        self.emitter.dedent()
+        self.emitter.blank()
+
+    def _emit_kernel_statement(self, node: ASTNode) -> None:
+        """Emit a statement inside a Triton kernel body.
+        
+        Transpiles TensorLoom let-statements to standard Python assignments
+        and preserves tl.* calls as-is for Triton.
+        """
+        if isinstance(node, LetStatement):
+            val = self._emit_expr(node.value)
+            self.emitter.line(f"{node.name} = {val}")
+        elif isinstance(node, AssignStatement):
+            target = self._emit_expr(node.target)
+            val = self._emit_expr(node.value)
+            self.emitter.line(f"{target} = {val}")
+        elif isinstance(node, ExpressionStatement):
+            expr = self._emit_expr(node.expression)
+            self.emitter.line(expr)
+        elif isinstance(node, IfStatement):
+            self._emit_if(node)
+        elif isinstance(node, ForLoop):
+            self._emit_for(node)
+        elif isinstance(node, ReturnStatement):
+            self._emit_return(node)
+        else:
+            self.emitter.comment(f"[kernel] Unsupported: {type(node).__name__}")
+
+    # ── @model (NML) → nn.Module with configurable __init__ ──
+
+    def _emit_nml_model(self, node: NMLModel) -> None:
+        """Emit a PyTorch nn.Module from an NML @model declaration.
+        
+        @config values become __init__ keyword arguments with defaults,
+        allowing callers to override them at instantiation time.
+        """
+        self.emitter.blank()
+        self.emitter.comment(f"=== NML Model: {node.name} ===")
+        self.emitter.blank()
+
+        self.emitter.line(f"class {node.name}(nn.Module):")
+        self.emitter.indent()
+        self.emitter.docstring(
+            f"NML declarative model: {node.name}\n"
+            f"    Auto-generated from .nml specification."
+        )
+        self.emitter.blank()
+
+        # ── __init__ with @config as keyword args ──
+        # Build __init__ signature from config keys
+        config_params: list[str] = []
+        for key, default_val in node.config.items():
+            default_str = self._emit_expr(default_val)
+            config_params.append(f"{key}={default_str}")
+
+        if config_params:
+            init_sig = f"def __init__(self, {', '.join(config_params)}):"
+        else:
+            init_sig = "def __init__(self):"
+
+        self.emitter.line(init_sig)
+        self.emitter.indent()
+        self.emitter.line("super().__init__()")
+
+        # Store config values as instance attributes
+        for key in node.config:
+            self.emitter.line(f"self.{key} = {key}")
+
+        self.emitter.blank()
+
+        # Emit layer declarations — may reference config variables
+        for layer in node.layers:
+            layer_code = self._emit_nml_layer(layer, node.config)
+            self.emitter.line(f"self.{layer.name} = {layer_code}")
+
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # ── forward method from @forward ──
+        if node.forward_body:
+            fwd_params = ", ".join(["self"] + node.forward_params)
+            self.emitter.line(f"def forward({fwd_params}):")
+            self.emitter.indent()
+
+            for stmt in node.forward_body:
+                self._emit_nml_forward_statement(stmt, node)
+
+            self.emitter.dedent()
+            self.emitter.blank()
+
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # Register as model name so train blocks can reference it
+        self._model_names.add(node.name)
+
+    def _emit_nml_layer(self, layer: LayerDeclaration,
+                         config: dict[str, ASTNode]) -> str:
+        """Emit a layer declaration, resolving config references to self.X."""
+        if isinstance(layer.layer_type, FunctionCall):
+            call = layer.layer_type
+            if isinstance(call.callee, Identifier):
+                layer_class = LAYER_MAP.get(call.callee.name, call.callee.name)
+                args = []
+                for a in call.args:
+                    expr = self._emit_expr(a)
+                    # If arg references a config key, prefix with self.
+                    if isinstance(a, Identifier) and a.name in config:
+                        expr = f"self.{a.name}"
+                    args.append(expr)
+                kwargs = []
+                for k, v in call.kwargs.items():
+                    val = self._emit_expr(v)
+                    if isinstance(v, Identifier) and v.name in config:
+                        val = f"self.{v.name}"
+                    kwargs.append(f"{k}={val}")
+                all_args = ", ".join(args + kwargs)
+                return f"{layer_class}({all_args})"
+        return self._emit_expr(layer.layer_type)
+
+    def _emit_nml_forward_statement(self, node: ASTNode,
+                                      nml: NMLModel) -> None:
+        """Emit a statement in an NML forward body.
+        
+        Layer references (e.g., 'attention(x)') are rewritten to
+        'self.attention(x)' to match the nn.Module pattern.
+        """
+        if isinstance(node, AssignStatement):
+            target = self._emit_expr(node.target)
+            val = self._emit_nml_forward_expr(node.value, nml)
+            self.emitter.line(f"{target} = {val}")
+        elif isinstance(node, LetStatement):
+            val = self._emit_nml_forward_expr(node.value, nml)
+            self.emitter.line(f"{node.name} = {val}")
+        elif isinstance(node, ReturnStatement):
+            if node.value:
+                val = self._emit_nml_forward_expr(node.value, nml)
+                self.emitter.line(f"return {val}")
+            else:
+                self.emitter.line("return")
+        elif isinstance(node, ExpressionStatement):
+            expr = self._emit_nml_forward_expr(node.expression, nml)
+            self.emitter.line(expr)
+        else:
+            self._emit_statement(node)
+
+    def _emit_nml_forward_expr(self, node: ASTNode, nml: NMLModel) -> str:
+        """Emit an expression in NML forward, prefixing layer names with self."""
+        layer_names = {l.name for l in nml.layers}
+
+        if isinstance(node, FunctionCall):
+            if isinstance(node.callee, Identifier) and node.callee.name in layer_names:
+                # Rewrite layer(x) → self.layer(x)
+                args = ", ".join(
+                    self._emit_nml_forward_expr(a, nml) for a in node.args
+                )
+                kwargs = ", ".join(
+                    f"{k}={self._emit_nml_forward_expr(v, nml)}"
+                    for k, v in node.kwargs.items()
+                )
+                all_args = ", ".join(filter(None, [args, kwargs]))
+                return f"self.{node.callee.name}({all_args})"
+            else:
+                # Standard function call
+                callee = self._emit_expr(node.callee)
+                args = ", ".join(
+                    self._emit_nml_forward_expr(a, nml) for a in node.args
+                )
+                kwargs = ", ".join(
+                    f"{k}={self._emit_nml_forward_expr(v, nml)}"
+                    for k, v in node.kwargs.items()
+                )
+                all_args = ", ".join(filter(None, [args, kwargs]))
+                return f"{callee}({all_args})"
+
+        if isinstance(node, BinaryOp):
+            left = self._emit_nml_forward_expr(node.left, nml)
+            right = self._emit_nml_forward_expr(node.right, nml)
+            return f"({left} {node.op} {right})"
+
+        # Fallback to standard expression emission
+        return self._emit_expr(node)
 
     # ── let / assign ──────────────────────────────────────────
 
@@ -274,7 +934,12 @@ class PyTorchBackend:
 
         # Methods (forward, etc.)
         for method in node.methods:
-            self._emit_method(method)
+            # If model needs gradient checkpointing and this is forward(),
+            # generate a _forward_body + checkpointed forward wrapper
+            if method.name == "forward" and node.name in self._checkpointed_models:
+                self._emit_checkpointed_forward(method)
+            else:
+                self._emit_method(method)
 
         self.emitter.dedent()
         self.emitter.blank()
@@ -309,6 +974,48 @@ class PyTorchBackend:
         for stmt in method.body:
             self._emit_statement(stmt)
 
+        self.emitter.dedent()
+        self.emitter.blank()
+
+    def _emit_checkpointed_forward(self, method: FunctionDef) -> None:
+        """Emit a forward() that wraps computation in torch.utils.checkpoint.
+
+        This enables *activation checkpointing* — intermediate activations are
+        discarded during the forward pass and recomputed during backward,
+        trading ~30 %% extra compute for up to 60 %% less activation memory.
+
+        Generated pattern:
+            def _forward_body(self, x):
+                # original forward body
+            def forward(self, x):
+                return activation_checkpoint(self._forward_body, x, use_reentrant=False)
+        """
+        # 1) _forward_body with the real logic
+        params = []
+        for p in method.params:
+            params.append("self" if p.name == "self" else p.name)
+        param_str = ", ".join(params)
+
+        self.emitter.line(f"def _forward_body({param_str}):")
+        self.emitter.indent()
+        self.emitter.comment("Actual computation (activations are recomputed during backward)")
+        for stmt in method.body:
+            self._emit_statement(stmt)
+        self.emitter.dedent()
+        self.emitter.blank()
+
+        # 2) public forward wrapping _forward_body in activation_checkpoint
+        non_self_params = [p.name for p in method.params if p.name != "self"]
+        args_str = ", ".join(non_self_params)
+
+        self.emitter.line(f"def forward({param_str}):")
+        self.emitter.indent()
+        self.emitter.docstring(
+            "Gradient-checkpointed forward — trades compute for ~60%% less activation memory."
+        )
+        self.emitter.line(
+            f"return activation_checkpoint(self._forward_body, {args_str}, use_reentrant=False)"
+        )
         self.emitter.dedent()
         self.emitter.blank()
 
@@ -409,15 +1116,15 @@ class PyTorchBackend:
         self.emitter.line("epoch_loss = running_loss / max(total, 1)")
         self.emitter.line("accuracy = correct / max(total, 1)")
 
-        # Checkpoint saving
+        # Weight snapshot saving (periodic model state backups)
         if ckpt_freq:
             self.emitter.blank()
-            self.emitter.comment("Gradient Checkpointing")
+            self.emitter.comment("Weight Snapshot — periodic model backup")
             self.emitter.line(f"if (epoch + 1) % {ckpt_freq} == 0:")
             self.emitter.indent()
             self.emitter.line(f'torch.save({node.model_name}.state_dict(), '
                               f'f"checkpoint_epoch_{{epoch+1}}.pt")')
-            self.emitter.line(f'print(f"  Checkpoint saved: checkpoint_epoch_{{epoch+1}}.pt")')
+            self.emitter.line(f'print(f"  [snapshot] Saved checkpoint_epoch_{{epoch+1}}.pt")')
             self.emitter.dedent()
 
         # Callbacks

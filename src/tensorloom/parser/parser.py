@@ -27,11 +27,14 @@ from tensorloom.parser.ast_nodes import (
     IfStatement,
     ImportStatement,
     IndexAccess,
+    KernelDef,
+    KernelParam,
     LayerDeclaration,
     LetStatement,
     ListLiteral,
     MemberAccess,
     ModelDefinition,
+    NMLModel,
     NoneLiteral,
     NumberLiteral,
     Parameter,
@@ -112,19 +115,218 @@ class Parser:
         if tok.type == TokenType.FOR:
             return self._parse_for()
 
+        # @ decorator blocks
+        if tok.type == TokenType.AT:
+            if self.pos + 1 < len(self.tokens):
+                next_tok = self.tokens[self.pos + 1]
+                if next_tok.type == TokenType.IDENTIFIER and next_tok.value == "kernel":
+                    return self._parse_kernel_def()
+                # @model for NML declarative blocks
+                if next_tok.type == TokenType.MODEL:
+                    return self._parse_nml_model()
+
         # Assignment  (identifier = expr)  or  expression statement
         return self._parse_assignment_or_expr()
 
     # ── import ────────────────────────────────────────────────
 
     def _parse_import(self) -> ImportStatement:
+        """Parse: import std.io  or  import transformer.nml as MyBlock"""
         tok = self._expect(TokenType.IMPORT)
         parts: list[str] = []
         parts.append(self._expect(TokenType.IDENTIFIER).value)
         while self._match(TokenType.DOT):
             parts.append(self._expect(TokenType.IDENTIFIER).value)
+
+        # Check if this is an NML import (path ends with .nml)
+        is_nml = len(parts) >= 2 and parts[-1] == "nml"
+
+        # Check for 'as Alias'
+        alias = None
+        if (not self._is_at_end()
+                and self._current().type == TokenType.IDENTIFIER
+                and self._current().value == "as"):
+            self._advance()  # consume 'as'
+            alias = self._expect(TokenType.IDENTIFIER).value
+
         self._consume_newline()
-        return ImportStatement(line=tok.line, column=tok.column, module_path=parts)
+        return ImportStatement(
+            line=tok.line, column=tok.column,
+            module_path=parts, alias=alias, is_nml=is_nml,
+        )
+
+    # ── @kernel ──────────────────────────────────────────────
+
+    def _parse_kernel_def(self) -> KernelDef:
+        """Parse:  @kernel def name(x_ptr, BLOCK_SIZE: tl.constexpr): body"""
+        tok = self._expect(TokenType.AT)       # @
+        self._expect(TokenType.IDENTIFIER)      # "kernel"
+        self._expect_keyword_or_name("def")     # "def" (treat as identifier)
+        name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.LPAREN)
+
+        params: list[KernelParam] = []
+        while not self._check(TokenType.RPAREN):
+            if params:
+                self._expect(TokenType.COMMA)
+            param_name = self._expect(TokenType.IDENTIFIER).value
+            is_constexpr = False
+
+            # Check for : tl.constexpr type hint
+            if self._check(TokenType.COLON):
+                self._advance()  # consume ':'
+                # Expect tl.constexpr  or just constexpr
+                hint_name = self._expect(TokenType.IDENTIFIER).value
+                if self._check(TokenType.DOT):
+                    self._advance()  # consume '.'
+                    sub = self._expect(TokenType.IDENTIFIER).value
+                    if sub == "constexpr":
+                        is_constexpr = True
+                elif hint_name == "constexpr":
+                    is_constexpr = True
+
+            params.append(KernelParam(
+                line=tok.line, column=tok.column,
+                name=param_name, is_constexpr=is_constexpr,
+            ))
+
+        self._expect(TokenType.RPAREN)
+        self._expect(TokenType.COLON)
+        self._consume_newline()
+        self._expect(TokenType.INDENT)
+
+        body = self._parse_block()
+
+        self._expect(TokenType.DEDENT)
+
+        return KernelDef(
+            line=tok.line, column=tok.column,
+            name=name, params=params, body=body,
+        )
+
+    def _expect_keyword_or_name(self, expected: str) -> Token:
+        """Expect a token that matches a specific value (keyword or identifier)."""
+        tok = self._current()
+        if tok.value == expected:
+            self._advance()
+            return tok
+        raise ParseError(f"Expected '{expected}', got '{tok.value}'", tok)
+
+    # ── @model (NML) ─────────────────────────────────────────
+
+    def _parse_nml_model(self) -> NMLModel:
+        """Parse NML declarative model:
+        
+        @model Name:
+            @config:
+                key = value
+            @layers:
+                name = Type(args)
+            @forward(params):
+                body
+        """
+        tok = self._expect(TokenType.AT)       # @
+        self._expect(TokenType.MODEL)           # model
+        name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.COLON)
+        self._consume_newline()
+        self._expect(TokenType.INDENT)
+
+        config: dict[str, ASTNode] = {}
+        layers: list[LayerDeclaration] = []
+        forward_params: list[str] = []
+        forward_body: list[ASTNode] = []
+
+        while not self._check(TokenType.DEDENT) and not self._is_at_end():
+            self._skip_newlines()
+            if self._check(TokenType.DEDENT) or self._is_at_end():
+                break
+
+            # Each sub-section starts with @
+            if self._check(TokenType.AT):
+                self._advance()  # consume @
+                section_name = self._expect(TokenType.IDENTIFIER).value
+
+                if section_name == "config":
+                    self._expect(TokenType.COLON)
+                    self._consume_newline()
+                    self._expect(TokenType.INDENT)
+                    config = self._parse_nml_config_block()
+                    self._expect(TokenType.DEDENT)
+
+                elif section_name == "layers":
+                    self._expect(TokenType.COLON)
+                    self._consume_newline()
+                    self._expect(TokenType.INDENT)
+                    layers = self._parse_nml_layers_block()
+                    self._expect(TokenType.DEDENT)
+
+                elif section_name == "forward":
+                    # @forward(x):  or  @forward(x, mask):
+                    self._expect(TokenType.LPAREN)
+                    while not self._check(TokenType.RPAREN):
+                        if forward_params:
+                            self._expect(TokenType.COMMA)
+                        forward_params.append(
+                            self._expect(TokenType.IDENTIFIER).value
+                        )
+                    self._expect(TokenType.RPAREN)
+                    self._expect(TokenType.COLON)
+                    self._consume_newline()
+                    self._expect(TokenType.INDENT)
+                    forward_body = self._parse_block()
+                    self._expect(TokenType.DEDENT)
+                else:
+                    raise ParseError(
+                        f"Unknown NML section '@{section_name}'. "
+                        "Expected @config, @layers, or @forward",
+                        self._current(),
+                    )
+            else:
+                raise ParseError(
+                    "Expected @config, @layers, or @forward section",
+                    self._current(),
+                )
+
+        self._expect(TokenType.DEDENT)
+
+        return NMLModel(
+            line=tok.line, column=tok.column,
+            name=name, config=config, layers=layers,
+            forward_params=forward_params, forward_body=forward_body,
+        )
+
+    def _parse_nml_config_block(self) -> dict[str, ASTNode]:
+        """Parse @config key=value pairs."""
+        config: dict[str, ASTNode] = {}
+        while not self._check(TokenType.DEDENT) and not self._is_at_end():
+            self._skip_newlines()
+            if self._check(TokenType.DEDENT):
+                break
+            key = self._expect(TokenType.IDENTIFIER).value
+            self._expect(TokenType.EQUALS)
+            value = self._parse_expression()
+            config[key] = value
+            self._consume_newline()
+        return config
+
+    def _parse_nml_layers_block(self) -> list[LayerDeclaration]:
+        """Parse @layers declarations:  name = Type(args)"""
+        layers: list[LayerDeclaration] = []
+        while not self._check(TokenType.DEDENT) and not self._is_at_end():
+            self._skip_newlines()
+            if self._check(TokenType.DEDENT):
+                break
+            tok = self._current()
+            layer_name = self._expect(TokenType.IDENTIFIER).value
+            self._expect(TokenType.EQUALS)
+            layer_type = self._parse_expression()
+            layers.append(LayerDeclaration(
+                line=tok.line, column=tok.column,
+                name=layer_name, layer_type=layer_type,
+            ))
+            self._consume_newline()
+        return layers
 
     # ── let ───────────────────────────────────────────────────
 
@@ -179,9 +381,9 @@ class Parser:
 
     def _parse_train(self) -> TrainBlock:
         tok = self._expect(TokenType.TRAIN)
-        model_name = self._expect(TokenType.IDENTIFIER).value
+        model_name = self._expect_name().value
         self._expect(TokenType.ON)
-        data_name = self._expect(TokenType.IDENTIFIER).value
+        data_name = self._expect_name().value
         self._expect(TokenType.COLON)
         self._consume_newline()
         self._expect(TokenType.INDENT)
@@ -758,6 +960,32 @@ class Parser:
                 self._current(),
             )
         return self._advance()
+
+    def _expect_name(self) -> Token:
+        """Expect an identifier or a keyword used as a name.
+        
+        In positions like `train <name> on <name>`, users may use names
+        that collide with keywords (e.g., `model`, `data`).  This method
+        accepts any keyword token as a valid name.
+        """
+        # Accept IDENTIFIER directly
+        if self._check(TokenType.IDENTIFIER):
+            return self._advance()
+        # Accept any keyword token as a name
+        keyword_types = {
+            TokenType.MODEL, TokenType.LAYER, TokenType.LET, TokenType.FN,
+            TokenType.TRAIN, TokenType.ON, TokenType.IMPORT, TokenType.RETURN,
+            TokenType.IF, TokenType.ELSE, TokenType.ELIF, TokenType.FOR,
+            TokenType.IN, TokenType.WHILE, TokenType.SELF, TokenType.EVERY,
+            TokenType.TRUE, TokenType.FALSE, TokenType.NONE,
+            TokenType.TENSOR_TYPE,
+        }
+        if self._current().type in keyword_types:
+            return self._advance()
+        raise ParseError(
+            f"Expected a name, got {self._current().type.name} ({self._current().value!r})",
+            self._current(),
+        )
 
     def _expect_one_of(self, *types: TokenType) -> Token:
         for t in types:

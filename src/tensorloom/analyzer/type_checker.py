@@ -21,6 +21,7 @@ from tensorloom.parser.ast_nodes import (
     Identifier,
     IfStatement,
     ImportStatement,
+    KernelDef,
     LetStatement,
     ModelDefinition,
     Program,
@@ -33,7 +34,7 @@ from tensorloom.parser.ast_nodes import (
 class Symbol:
     """A symbol in the scope table."""
     name: str
-    kind: str  # "variable", "model", "function", "layer", "import"
+    kind: str  # "variable", "model", "function", "layer", "import", "kernel"
     line: int = 0
 
 
@@ -136,13 +137,28 @@ class TypeChecker:
                 ))
             # Validate known params
             valid_params = {"epochs", "optimizer", "loss", "precision", "lr",
-                            "batch_size", "shuffle", "checkpoint"}
+                            "batch_size", "shuffle", "checkpoint", "distributed"}
             for key in node.params:
                 if key not in valid_params:
                     self.warnings.append(AnalysisWarning(
                         f"Unknown training parameter '{key}'",
                         node.line,
                     ))
+
+        elif isinstance(node, KernelDef):
+            # Register the kernel as a callable in the enclosing scope
+            self.current_scope.define(node.name, "kernel", node.line)
+            # Kernel bodies use pointer arithmetic — create a permissive scope
+            kernel_scope = Scope(parent=self.current_scope)
+            for param in node.params:
+                kernel_scope.define(param.name, "variable", node.line)
+            # Pre-define tl namespace as a known import
+            kernel_scope.define("tl", "import", node.line)
+            prev = self.current_scope
+            self.current_scope = kernel_scope
+            for stmt in node.body:
+                self._analyze_statement(stmt)
+            self.current_scope = prev
 
         elif isinstance(node, FunctionDef):
             self._analyze_function_def(node)

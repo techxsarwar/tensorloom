@@ -33,8 +33,12 @@ class Program(ASTNode):
 
 @dataclass
 class ImportStatement(ASTNode):
-    """import std.io  →  module_path = ["std", "io"]"""
+    """import std.io  →  module_path = ["std", "io"]
+    import transformer.nml as Block  →  alias = "Block", is_nml = True
+    """
     module_path: list[str] = field(default_factory=list)
+    alias: Optional[str] = None
+    is_nml: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -282,4 +286,33 @@ class NMLModel(ASTNode):
     name: str = ""
     config: dict[str, ASTNode] = field(default_factory=dict)
     layers: list[LayerDeclaration] = field(default_factory=list)
+    forward_params: list[str] = field(default_factory=list)
     forward_body: list[ASTNode] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Triton Kernel Nodes
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class KernelParam(ASTNode):
+    """A parameter in a @kernel function.
+    
+    - Standard params: x_ptr, y_ptr, num_elements
+    - Constexpr params: BLOCK_SIZE: tl.constexpr
+    """
+    name: str = ""
+    is_constexpr: bool = False
+
+
+@dataclass
+class KernelDef(ASTNode):
+    """@kernel def name(params): body
+    
+    Transpiles to a @triton.jit decorated function with an
+    auto-generated launcher wrapper that calculates grid dimensions.
+    """
+    name: str = ""
+    params: list[KernelParam] = field(default_factory=list)
+    body: list[ASTNode] = field(default_factory=list)
+

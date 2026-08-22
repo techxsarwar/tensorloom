@@ -20,14 +20,16 @@ import time
 from tensorloom.lexer.lexer import Lexer, LexerError
 from tensorloom.parser.parser import Parser, ParseError
 from tensorloom.codegen.pytorch_backend import PyTorchBackend
+from tensorloom.analyzer.type_checker import TypeChecker
+from tensorloom.analyzer.shape_inference import ShapeInferenceEngine
 
 
 # ── Banner ────────────────────────────────────────────────────
 BANNER = r"""
-  ╔════════════════════════════════════════════════╗
-  ║   🧶  TensorLoom Compiler  v0.1.0             ║
-  ║   GPU-Efficient Language for AI Training       ║
-  ╚════════════════════════════════════════════════╝
+  +================================================+
+  |   TensorLoom Compiler  v0.1.0                  |
+  |   GPU-Efficient Language for AI Training        |
+  +================================================+
 """
 
 
@@ -103,7 +105,7 @@ def main() -> None:
 
 def _cmd_tokens(source: str, filepath: str) -> None:
     """Dump the token stream for debugging."""
-    print(f"🔍 Tokenizing: {filepath}")
+    print(f"[tokens] Tokenizing: {filepath}")
     tokens = _lex(source, filepath)
     print(f"   {len(tokens)} tokens generated\n")
     for tok in tokens:
@@ -112,34 +114,68 @@ def _cmd_tokens(source: str, filepath: str) -> None:
 
 def _cmd_ast(source: str, filepath: str) -> None:
     """Dump the AST for debugging."""
-    print(f"🌳 Parsing AST: {filepath}")
+    print(f"[ast] Parsing AST: {filepath}")
     tokens = _lex(source, filepath)
     ast = _parse(tokens)
     _print_ast(ast, indent=0)
 
 
 def _cmd_check(source: str, filepath: str) -> None:
-    """Type-check and validate without executing."""
-    print(f"✅ Checking: {filepath}")
+    """Type-check, shape-check, and validate without executing."""
+    print(f"[check] Checking: {filepath}")
     t0 = time.perf_counter()
     tokens = _lex(source, filepath)
     ast = _parse(tokens)
-    elapsed = (time.perf_counter() - t0) * 1000
+    parse_time = (time.perf_counter() - t0) * 1000
     stmt_count = len(ast.statements)
     print(f"   {len(tokens)} tokens, {stmt_count} statements")
-    print(f"   Parse time: {elapsed:.1f}ms")
-    print(f"   ✓ No errors found.")
+    print(f"   Parse time: {parse_time:.1f}ms")
+
+    # Semantic analysis
+    checker = TypeChecker()
+    errors, warnings = checker.analyze(ast)
+
+    # Shape inference
+    shape_engine = ShapeInferenceEngine()
+    shape_report = shape_engine.infer(ast)
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    # Report shape flow for models
+    for model_name, layer_shapes in shape_report.model_shapes.items():
+        print(f"\n   Shape flow for '{model_name}':")
+        for spec in layer_shapes:
+            print(f"   +-- {spec.layer_name}: {spec.input_shape} -> {spec.output_shape}")
+
+    # Report errors
+    total_errors = errors + shape_report.errors
+    total_warnings = warnings + [w for w in shape_report.warnings]
+
+    for w in total_warnings:
+        print(f"   [WARN] L{w.line}: {w.message}")
+
+    for e in total_errors:
+        msg = e.message if hasattr(e, 'message') else str(e)
+        line = e.line if hasattr(e, 'line') else '?'
+        print(f"   [ERROR] L{line}: {msg}")
+
+    if total_errors:
+        print(f"\n   [FAIL] {len(total_errors)} error(s) found in {elapsed:.1f}ms")
+        sys.exit(1)
+    else:
+        print(f"\n   [OK] No errors found ({elapsed:.1f}ms)")
 
 
 def _cmd_compile(source: str, filepath: str, output: str | None) -> None:
     """Transpile to PyTorch Python code."""
     print(BANNER)
-    print(f"📦 Compiling: {filepath}")
+    print(f"[compile] Compiling: {filepath}")
     t0 = time.perf_counter()
 
     tokens = _lex(source, filepath)
     ast = _parse(tokens)
-    backend = PyTorchBackend()
+    source_dir = os.path.dirname(os.path.abspath(filepath)) or "."
+    backend = PyTorchBackend(source_dir=source_dir)
     python_code = backend.generate(ast)
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -151,7 +187,7 @@ def _cmd_compile(source: str, filepath: str, output: str | None) -> None:
     with open(output, "w", encoding="utf-8") as f:
         f.write(python_code)
 
-    print(f"   ✓ Emitted: {output}")
+    print(f"   [OK] Emitted: {output}")
     print(f"   Compile time: {elapsed:.1f}ms")
     print(f"   Lines: {python_code.count(chr(10))}")
 
@@ -159,7 +195,7 @@ def _cmd_compile(source: str, filepath: str, output: str | None) -> None:
 def _cmd_run(source: str, filepath: str) -> None:
     """Compile and immediately execute."""
     print(BANNER)
-    print(f"🚀 Compiling & Running: {filepath}")
+    print(f"[run] Compiling & Running: {filepath}")
     t0 = time.perf_counter()
 
     tokens = _lex(source, filepath)
@@ -174,9 +210,9 @@ def _cmd_run(source: str, filepath: str) -> None:
     with open(output, "w", encoding="utf-8") as f:
         f.write(python_code)
 
-    print(f"   ✓ Compiled in {compile_time:.1f}ms → {output}")
-    print(f"   🏃 Executing...\n")
-    print("─" * 50)
+    print(f"   [OK] Compiled in {compile_time:.1f}ms -> {output}")
+    print(f"   Executing...\n")
+    print("-" * 50)
 
     # Execute
     result = subprocess.run(
@@ -184,17 +220,17 @@ def _cmd_run(source: str, filepath: str) -> None:
         cwd=os.path.dirname(os.path.abspath(filepath)) or ".",
     )
 
-    print("─" * 50)
+    print("-" * 50)
     if result.returncode == 0:
-        print(f"\n   ✓ Execution completed successfully.")
+        print(f"\n   [OK] Execution completed successfully.")
     else:
-        print(f"\n   ✗ Execution failed with code {result.returncode}")
+        print(f"\n   [FAIL] Execution failed with code {result.returncode}")
         sys.exit(result.returncode)
 
 
 def _cmd_info(source: str, filepath: str) -> None:
     """Estimate GPU memory usage for the program."""
-    print(f"📊 Analyzing: {filepath}")
+    print(f"[info] Analyzing: {filepath}")
     tokens = _lex(source, filepath)
     ast = _parse(tokens)
 
@@ -218,15 +254,27 @@ def _cmd_info(source: str, filepath: str) -> None:
 
             for name, params in layers_info:
                 mem_mb = (params * 4) / (1024 * 1024)  # float32
-                print(f"   ├─ {name}: {params:,} params ({mem_mb:.2f} MB)")
+                print(f"   +-- {name}: {params:,} params ({mem_mb:.2f} MB)")
 
             total_mem = (total_params * 4) / (1024 * 1024)
             train_mem = total_mem * 3  # params + gradients + optimizer states
-            print(f"   │")
-            print(f"   ├─ Total parameters: {total_params:,}")
-            print(f"   ├─ Model memory (fp32): {total_mem:.2f} MB")
-            print(f"   ├─ Training memory est.: {train_mem:.2f} MB")
-            print(f"   └─ Training memory (fp16): {train_mem / 2:.2f} MB")
+            print(f"   |")
+            print(f"   +-- Total parameters: {total_params:,}")
+            print(f"   +-- Model memory (fp32): {total_mem:.2f} MB")
+            print(f"   +-- Training memory est.: {train_mem:.2f} MB")
+            print(f"   +-- Training memory (fp16): {train_mem / 2:.2f} MB")
+
+    # Shape flow analysis
+    shape_engine = ShapeInferenceEngine()
+    shape_report = shape_engine.infer(ast)
+
+    for model_name, layer_shapes in shape_report.model_shapes.items():
+        print(f"\n   Shape flow for '{model_name}':")
+        for spec in layer_shapes:
+            print(f"   +-- {spec.layer_name}: {spec.input_shape} -> {spec.output_shape}")
+
+    for e in shape_report.errors:
+        print(f"   [SHAPE ERROR] L{e.line}: {e.message}")
 
 
 # ══════════════════════════════════════════════════════════════

@@ -1,0 +1,85 @@
+Metadata-Version: 2.4
+Name: tensorloom
+Version: 0.1.0
+Summary: TensorLoom — A GPU-Efficient Language for AI Training
+Author: TensorLoom Team
+License-Expression: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.2.0
+Requires-Dist: numpy>=1.24.0
+
+# 🧶 TensorLoom
+
+**A GPU-Efficient Programming Language for AI Training**
+
+TensorLoom is a domain-specific programming language designed from the ground up for AI/ML training workloads. It compiles to optimized PyTorch code with automatic mixed precision, kernel fusion, and gradient checkpointing built into the language.
+
+## Features
+
+- **Tensors as first-class citizens** — no imports needed, tensor ops are native
+- **Automatic kernel fusion** — the pipe operator `|>` chains operations for GPU fusion
+- **Mixed precision by default** — `precision = fp16` in train blocks
+- **Gradient checkpointing** — `checkpoint every N epochs` syntax
+- **Clean Python-like syntax** — indentation-based, AI-specific keywords
+- **Dual file format** — `.tl` for executable scripts, `.nml` for model architectures
+
+## Quick Start
+
+```bash
+# Install
+pip install -e .
+
+# Run a TensorLoom script
+tlc run examples/hello.tl
+
+# Compile to Python (inspect generated code)
+tlc compile examples/mnist.tl --output mnist_compiled.py
+
+# Type-check only
+tlc check examples/transformer.nml
+
+# Show estimated GPU memory usage
+tlc info examples/mnist.tl
+```
+
+## Language Preview
+
+```
+// Define a model
+model Classifier:
+    layer fc1 = Linear(784, 256)
+    layer fc2 = Linear(256, 10)
+
+    fn forward(self, x: Tensor) -> Tensor:
+        x = self.fc1(x) |> relu |> dropout(0.2)
+        x = self.fc2(x) |> softmax
+        return x
+
+// Train it
+let net = Classifier()
+let data = mnist.load(batch_size=64)
+
+train net on data:
+    epochs = 10
+    optimizer = Adam(lr=0.001)
+    loss = CrossEntropy
+    precision = fp16
+```
+
+## File Extensions
+
+| Extension | Purpose | Contents |
+|-----------|---------|----------|
+| `.tl` | TensorLoom Script | Full executable code — imports, logic, training |
+| `.nml` | Neural Markup Language | Pure model architecture definitions |
+
+## Architecture
+
+```
+Source (.tl/.nml) → Lexer → Tokens → Parser → AST → Analyzer → Optimized AST → CodeGen → PyTorch Python
+```
+
+## License
+
+MIT

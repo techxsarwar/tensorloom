@@ -57,8 +57,13 @@ class Lexer:
 
     def _scan_token(self) -> None:
         # At the start of a logical line, handle indentation
-        if self._at_line_start and self._paren_depth == 0:
-            self._handle_indentation()
+        if self._at_line_start:
+            if self._paren_depth == 0:
+                self._handle_indentation()
+            else:
+                # Inside brackets: consume leading whitespace silently
+                while not self._at_end() and self._peek() in (" ", "\t"):
+                    self._advance()
             self._at_line_start = False
 
         if self._at_end():
@@ -67,7 +72,7 @@ class Lexer:
         ch = self._peek()
 
         # Skip inline whitespace (not newlines)
-        if ch in (" ", "\t") and not self._at_line_start:
+        if ch in (" ", "\t"):
             self._advance()
             return
 

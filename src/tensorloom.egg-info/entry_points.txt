@@ -1,0 +1,2 @@
+[console_scripts]
+tlc = tensorloom.cli:main
