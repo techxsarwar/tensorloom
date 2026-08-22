@@ -1,89 +1,64 @@
-# 📦 Guide 05: Cross-File Modular Architecture
+# 📦 Guide 05: The LEGO Toy Box (Cross-File Modular Architecture)
 
-TensorLoom bridges declarative architecture design and imperative pipeline execution through its **Cross-File Import System**.
-
----
-
-## 1. Project Organization
-
-A standard TensorLoom project maintains a clean separation between architecture blueprints and training pipelines:
-
-```
-my_project/
-├── architectures/
-│   ├── resnet.nml
-│   ├── transformer.nml
-│   └── vit.nml
-└── pipelines/
-    ├── train_classification.tl
-    └── evaluate.tl
-```
+> *Imagine you built an awesome LEGO dragon head in one room. If your friend in the next room is building a castle, they shouldn't have to rebuild your dragon from scratch! They should just say: "Hey, send the dragon head over, and I'll plug it onto my castle wall!" That is what Cross-File Imports do.*
 
 ---
 
-## 2. The Import Statement Syntax
+## 📂 The Clean AI Project Folder
 
-To import an `.nml` architecture file into a `.tl` script, use the `import ... as ...` syntax:
+When building big AI projects, you don't dump 5,000 lines of code into a single giant text file. You organize your files into neat little boxes:
 
 ```
-import architectures.resnet.nml as ResNet
-import architectures.transformer.nml as MyTransformer
+my_ai_lab/
+├── models/                      📁 The Blueprint Box (.nml)
+│   ├── resnet_block.nml         ➔ A tough convolutional block
+│   └── vision_transformer.nml   ➔ A super-smart vision eye
+│
+└── experiments/                 📁 The Training Gym (.tl)
+    ├── train_cifar10.tl         ➔ Trains on picture flashcards
+    └── train_imagenet.tl        ➔ Trains on big photo albums
 ```
 
 ---
 
-## 3. How Cross-File Sub-Compilation Works
+## 🔌 How to Import and Plug In a Model
 
-```mermaid
-flowchart LR
-    A["train.tl"] --> B["Parser sees import x.nml as Y"]
-    B --> C["Sub-Compiler loads x.nml"]
-    C --> D["NML Transpiler emits class Y(nn.Module)"]
-    D --> E["Inlines class definition into generated .py"]
-    E --> F["Enables Y(override_args) in script"]
+In your training script (`train_cifar10.tl`), you bring in an `.nml` blueprint using `import ... as ...`:
+
 ```
+// 1. Fetch the blueprint from the models folder and call it "VisionEye"
+import models.vision_transformer.nml as VisionEye
 
-1. When the compiler encounters `import path.nml as Alias`, it pauses top-level code generation.
-2. It locates and parses the external `.nml` file relative to the source directory.
-3. It sub-compiles the `.nml` model and renames the resulting Python class to the specified `Alias`.
-4. It injects the full `nn.Module` class inline into the output Python file before any instantiation.
+// 2. Build one, but customize the dials for our smaller pictures!
+let net = VisionEye(patch_size=4, embed_dim=256, num_heads=8)
 
----
-
-## 4. End-to-End Cross-File Example
-
-### File 1: `resnet.nml`
-```
-@model ResBlock:
-    @config:
-        channels = 64
-
-    @layers:
-        conv1 = Conv2d(channels, channels, kernel_size=3, padding=1)
-        bn1   = BatchNorm2d(channels)
-
-    @forward(x):
-        let residual = x
-        x = relu(bn1(conv1(x)))
-        return x + residual
-```
-
-### File 2: `train_resnet.tl`
-```
-import resnet.nml as ResBlock
-
-// Instantiate with custom config override
-let net = ResBlock(channels=128)
+// 3. Load our practice cards
 let data = load_dataset()
 
+// 4. Train it!
 train net on data:
-    epochs = 10
-    optimizer = Adam(lr=0.001)
+    epochs = 15
+    optimizer = Adam(lr=0.0003)
     loss = CrossEntropy
     precision = fp16
 ```
 
-### Compile Command:
-```bash
-python -m tensorloom compile train_resnet.tl -o train_resnet_compiled.py
+---
+
+## 🤖 What TensorLoom Does Behind the Scenes
+
+When you run `python -m tensorloom compile train_cifar10.tl -o compiled.py`, the compiler does a 4-step dance:
+
+```mermaid
+flowchart TD
+    A["train_cifar10.tl asks for vision_transformer.nml"] --> B["1. TensorLoom reads vision_transformer.nml"]
+    B --> C["2. Sub-Compiles the NML blueprint into a Python class"]
+    C --> D["3. Renames the class to your alias ('VisionEye')"]
+    D --> E["4. Pastes the class directly into the top of compiled.py"]
+    E --> F["5. Injects the custom dials (patch_size=4, embed_dim=256)"]
 ```
+
+### Why This is Amazing:
+1. **Single Self-Contained Output**: The generated `compiled.py` has zero external dependencies on other files. You can email that single `.py` file to a friend, send it to a supercomputer cluster, or deploy it on AWS, and it will run flawlessly!
+2. **Dynamic Aliasing**: If two blueprints have the same name (like `Block`), you can import one as `ResBlock` and another as `TransformerBlock` without any naming collisions.
+3. **Compile-Time Checks**: If `vision_transformer.nml` has a typo or is missing, TensorLoom catches it before compiling the rest of your program.

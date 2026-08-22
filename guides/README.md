@@ -1,34 +1,38 @@
-# 📚 TensorLoom Documentation & Guides
+# 📚 The TensorLoom Adventure Guidebook
 
-Welcome to the comprehensive guide library for **TensorLoom** — the high-performance, GPU-efficient domain-specific language for AI training.
-
-Whether you're an AI researcher, ML systems engineer, or student, these guides will take you from the fundamentals to advanced bare-metal GPU accelerator programming.
+> *Welcome to the world of TensorLoom! This guidebook is designed for anyone—from a curious 10-year-old to a seasoned AI scientist—who wants to build super-fast artificial intelligence without the headaches.*
 
 ---
 
-## 🗺️ Guide Index
+## 🗺️ Choose Your Quest
 
-| Chapter | Guide | Topics Covered |
+Click on any guide below to start learning:
+
+| Chapter | Adventure Guide | What You Will Discover |
 | :--- | :--- | :--- |
-| **01** | [**Why TensorLoom?**](01_why_tensorloom.md) | Philosophy, comparison with raw PyTorch, memory efficiency, auto-fusion, and why DSLs matter |
-| **02** | [**5-Minute Quickstart**](02_quickstart_tutorial.md) | Installing, CLI usage, writing your first `.tl` script, and transpiling to PyTorch |
-| **03** | [**Declarative NML Architecture**](03_nml_declarative_models.md) | Neural Markup Language (`.nml`), `@model`, `@config`, `@layers`, `@forward`, and polymorphic rewrites |
-| **04** | [**Imperative `.tl` Scripting**](04_imperative_tl_pipelines.md) | Pipeline syntax, functional pipe operator (`\|>`), `train` blocks, mixed precision, and checkpoints |
-| **05** | [**Cross-File Modular Architecture**](05_cross_file_modules.md) | `import model.nml as Alias`, sub-compilation, symbol resolution, and constructor overrides |
-| **06** | [**Inline Triton GPU Kernels**](06_custom_triton_kernels.md) | Bare-metal accelerator coding with `@kernel`, tiled memory access, pointer math, and auto-launchers |
-| **07** | [**Multi-GPU Distributed Scaling (DDP)**](07_distributed_training_ddp.md) | 1-line cluster scaling with `distributed = true`, NCCL backend, rank-gating, and `torchrun` execution |
-| **08** | [**Static Shape Inference & Profiling**](08_shape_inference_and_verification.md) | Catching dimension bugs at compile time (<3ms), parameter counting, and memory profiling with `tlc info` |
+| **01** | [**🚀 Why TensorLoom?**](01_why_tensorloom.md) | Why regular AI code is like building LEGO with oven mitts, and how TensorLoom gives you superpowers. |
+| **02** | [**⚡ 5-Minute Quickstart**](02_quickstart_tutorial.md) | Build your very first number-reading robot brain in 60 seconds from scratch! |
+| **03** | [**📐 The Secret Blueprint (`.nml`)**](03_nml_declarative_models.md) | Learn the 4 magic blocks of `.nml` and the 3 behind-the-scenes compiler transformations. |
+| **04** | [**🛠️ The Training Gym (`.tl`)**](04_imperative_tl_pipelines.md) | Master variables with `let`, the fun Waterslide Operator (`\|>`), and the AI Personal Trainer (`train`). |
+| **05** | [**📦 The LEGO Toy Box (Imports)**](05_cross_file_modules.md) | Plug blueprints from other files into your training scripts without copying and pasting! |
+| **06** | [**⚡ The Nitro Turbo Button (Triton)**](06_custom_triton_kernels.md) | Command 10,000 GPU elves simultaneously using bare-metal inline `@kernel` blocks. |
+| **07** | [**🌐 The Superhero Team (Multi-GPU DDP)**](07_distributed_training_ddp.md) | Train across 8 GPUs at once just by typing `distributed = true`. |
+| **08** | [**🔍 The Shape-Sorting Toy (Verification)**](08_shape_inference_and_verification.md) | How the compiler catches "square peg in round hole" bugs in 2 milliseconds before they crash. |
 
 ---
 
-## ⚡ Quick CLI Tip
-
-When running the compiler from the command line:
+## 💻 Quick Terminal Command Cheat-Sheet
 
 ```bash
-# Using the global binary entry point
-tlc compile path/to/script.tl -o output.py
+# 1. Ask the doctor to X-Ray your model:
+python -m tensorloom info my_model.tl
 
-# Or directly using Python module syntax
-python -m tensorloom compile path/to/script.tl -o output.py
+# 2. Check for shape bugs in 0.002 seconds:
+python -m tensorloom check my_model.tl
+
+# 3. Transform your code into lightning-fast PyTorch:
+python -m tensorloom compile my_model.tl -o run.py
+
+# 4. Compile and run immediately:
+python -m tensorloom run my_model.tl
 ```

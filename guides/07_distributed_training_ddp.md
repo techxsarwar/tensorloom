@@ -1,14 +1,55 @@
-# 🌐 Guide 07: Multi-GPU Distributed Data Parallel (DDP)
+# 🌐 Guide 07: The Superhero Team (Multi-GPU Distributed Training)
 
-Scaling deep learning models across multiple GPUs is traditionally one of the most tedious and error-prone parts of PyTorch engineering.
-
-TensorLoom reduces this to a single declarative flag: `distributed = true`.
+> *One superhero is awesome. But what if a giant monster appears, and you need the entire Avengers team to fight together? You give each superhero a walkie-talkie so they can coordinate their attacks in real time! That is what Distributed Data Parallel (DDP) does with GPUs.*
 
 ---
 
-## 1. Enabling DDP in TensorLoom
+## 🦸 Why Train on Multiple GPUs?
 
-Simply add `distributed = true` to your `train` block:
+When your AI model is huge (like a language model or a high-res video generator), training on a single GPU might take **3 whole months**.
+
+If you connect **8 GPUs** together:
+- GPU 1 reads Chapter 1 of the dataset.
+- GPU 2 reads Chapter 2.
+- GPU 3 reads Chapter 3... and so on!
+- After each batch, all 8 GPUs quickly share their notes over a high-speed walkie-talkie network (NCCL).
+
+Now your 3-month training job finishes in **a few days**!
+
+```
+                    [ 📚 Huge Training Dataset ]
+                    /       |           |       \
+               Chapter 1  Chapter 2  Chapter 3  Chapter 4
+                  │         │           │         │
+                  ▼         ▼           ▼         ▼
+               [GPU 0]   [GPU 1]     [GPU 2]   [GPU 3]
+                  \         │           │         /
+                   \────────┴─────┬─────┴────────/
+                                  ▼
+                     [ 📻 High-Speed NCCL Sync ]
+                     "All GPUs agree on new weights!"
+```
+
+---
+
+## 😫 The Nightmare of Distributed Coding in PyTorch
+
+In regular PyTorch, setting up multi-GPU training is terrifying:
+1. You have to read environment variables like `LOCAL_RANK`, `RANK`, and `WORLD_SIZE`.
+2. You have to initialize the NCCL communication backend.
+3. You have to wrap the model in `DistributedDataParallel`.
+4. You have to shard the dataset with `DistributedSampler`.
+5. You have to call `sampler.set_epoch(epoch)` every single round.
+6. You have to silence all GPUs except Rank 0 so your terminal doesn't print the same message 8 times.
+7. You have to cleanly destroy the process group when finished.
+
+If you miss any step, the GPUs lock up and freeze forever! 🧊
+
+---
+
+## 🪄 The TensorLoom Magic: Just Write `distributed = true`
+
+In TensorLoom, all of that nightmare plumbing is replaced with **one word**:
 
 ```
 import transformer.nml as Transformer
@@ -21,43 +62,19 @@ train net on data:
     optimizer = AdamW(lr=0.0001)
     loss = CrossEntropy
     precision = fp16
-    distributed = true
+    distributed = true     // 🚀 BOOM! That's it!
 ```
 
 ---
 
-## 2. What TensorLoom Synthesizes Automatically
+## 🚀 How to Launch on 4 GPUs with `torchrun`
 
-When `distributed = true` is set, the compiler automatically injects:
+When you compile your script with `python -m tensorloom compile train.tl -o train_ddp.py`, TensorLoom writes all 145 lines of distributed sync code for you.
 
-1. **Process Group Initialization (`setup_ddp`)**:
-   - Initializes NCCL backend with `dist.init_process_group("nccl", init_method="env://")`.
-   - Maps each worker process to its local GPU via `torch.cuda.set_device(local_rank)`.
-2. **Distributed Dataset Sharding**:
-   - Wraps the dataset with `DistributedSampler(dataset, shuffle=True)`.
-   - Calls `sampler.set_epoch(epoch)` before every epoch to ensure uniform data shuffling across nodes.
-3. **Model Synchronization**:
-   - Wraps the model with `torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])`.
-4. **Rank-0 Gated Logging**:
-   - Suppresses redundant console output on worker ranks so training logs remain clean.
-5. **Process Group Teardown (`cleanup_ddp`)**:
-   - Adds `dist.barrier()` and `dist.destroy_process_group()` for clean shutdown.
-6. **Execution Entrypoint**:
-   - Adds the `if __name__ == "__main__":` entrypoint required by multi-process spawn runners.
-
----
-
-## 3. Running Distributed Training with `torchrun`
-
-Once compiled, launch your script on any multi-GPU machine using PyTorch's `torchrun`:
+To launch your superhero team across 4 GPUs, just run:
 
 ```bash
-# Compile to DDP PyTorch script
-python -m tensorloom compile train_ddp.tl -o train_ddp_compiled.py
-
-# Launch on 4 GPUs
-torchrun --nproc_per_node=4 train_ddp_compiled.py
-
-# Launch across 2 nodes with 8 GPUs each (16 GPUs total)
-torchrun --nnodes=2 --nproc_per_node=8 --rdzv_backend=c10d --rdzv_endpoint=node1:29500 train_ddp_compiled.py
+torchrun --nproc_per_node=4 train_ddp.py
 ```
+
+All 4 GPUs will fire up, divide the work evenly, sync their gradients, and train your model at maximum cluster throughput! 🏎️💨

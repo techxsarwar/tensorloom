@@ -1,42 +1,54 @@
-# ⚡ Guide 02: 5-Minute Quickstart Tutorial
+# ⚡ Guide 02: 5-Minute Quickstart (Building Your First AI Brain)
 
-In this guide, you will learn how to write, inspect, compile, and execute your very first TensorLoom program.
+> *Welcome to your first day in the AI Robot Lab! In the next 5 minutes, we are going to build a smart robot brain that can read handwritten numbers, check its memory, and compile it into blazing-fast machine code.*
 
 ---
 
-## 1. Installation
+## 🛠️ Step 1: Install Your Robot Toolkit
 
-TensorLoom can be installed via `pip`:
+Open your terminal (the black command window where you talk to your computer) and run:
 
 ```bash
 pip install tensorloom
 ```
 
-To verify the installation:
+To make sure your compiler is ready and listening:
 
 ```bash
 python -m tensorloom --help
 ```
 
+If you see a colorful ASCII banner with `TensorLoom Compiler`, you're all set! 🚀
+
 ---
 
-## 2. Your First TensorLoom Program (`hello_mnist.tl`)
+## 📝 Step 2: Write Your First Robot Brain (`hello_mnist.tl`)
 
-Create a new file named `hello_mnist.tl`:
+Let's write a program that reads numbers written by human hands (the famous MNIST dataset). 
+
+Create a file named `hello_mnist.tl` and write this code:
 
 ```
-// hello_mnist.tl — Simple Digit Classifier
+// hello_mnist.tl — Our Number-Reading Robot Brain
 
-model MNISTClassifier:
-    layer fc1 = Linear(784, 128)
-    layer fc2 = Linear(128, 10)
+model DigitReader:
+    // Layer 1: Takes 784 pixels (a 28x28 picture) and compresses them into 128 clues
+    layer eye = Linear(784, 128)
+    
+    // Layer 2: Takes the 128 clues and decides which number (0 to 9) it is
+    layer brain = Linear(128, 10)
 
-    fn forward(self, x: Tensor) -> Tensor:
-        return x |> self.fc1 |> relu |> self.fc2
+    // The thought process: Picture -> Eye -> Energy Boost (ReLU) -> Brain Decision
+    fn forward(self, picture: Tensor) -> Tensor:
+        return picture |> self.eye |> relu |> self.brain
 
-let net = MNISTClassifier()
+// 1. Create a fresh robot instance
+let net = DigitReader()
+
+// 2. Open our big book of practice flashcards
 let data = load_dataset()
 
+// 3. Send the robot to the training gym!
 train net on data:
     epochs = 5
     optimizer = Adam(lr=0.001)
@@ -46,58 +58,60 @@ train net on data:
 
 ---
 
-## 3. Inspecting the Model (Static Analysis)
+## 🔍 Step 3: The X-Ray Scan (`tlc info`)
 
-Before executing or compiling, you can inspect the model structure, parameter counts, and memory layout:
+Before running a real sports car, you check under the hood. Let's ask TensorLoom to X-ray our robot:
 
 ```bash
 python -m tensorloom info hello_mnist.tl
 ```
 
-**Output:**
+### What TensorLoom Sees:
 ```
   +================================================+
   |   TensorLoom Compiler  v0.1.0                  |
   |   GPU-Efficient Language for AI Training        |
   +================================================+
 
-[info] Model Summary: MNISTClassifier
-   Total Parameters: 101,770 (0.10M)
+[info] Model Summary: DigitReader
+   Total Parameters: 101,770 (0.10M tiny math gears)
    Trainable:        101,770
    Estimated Memory: ~0.39 MB (FP32) / ~0.19 MB (FP16)
-   Status:           Valid
+   Status:           Valid & Ready for GPU!
 ```
+
+TensorLoom counted all **101,770 tiny math knobs** in our robot and told us it will only take **0.19 Megabytes** of memory in FP16 mode!
 
 ---
 
-## 4. Compiling to PyTorch Code
+## ⚙️ Step 4: The Transformation (Transpile to PyTorch)
 
-To transpile your `.tl` script into standard PyTorch Python:
+Now comes the magic! Let's tell TensorLoom to translate our clean code into super-optimized PyTorch Python:
 
 ```bash
-python -m tensorloom compile hello_mnist.tl -o hello_mnist_compiled.py
+python -m tensorloom compile hello_mnist.tl -o run_mnist.py
 ```
 
-Inspect `hello_mnist_compiled.py` to see the generated PyTorch code:
-- Automatic CUDA device detection (`torch.device("cuda" if ...)`).
-- Model class extending `nn.Module`.
-- Automatic Kernel Fusion via `torch.compile(net, mode="max-autotune")`.
-- Training loop instrumented with `autocast` and `GradScaler`.
+Open `run_mnist.py`. Look at what the compiler created for you automatically:
+1. **Device Detection**: Automatically looks for a gaming GPU (`cuda`) and uses it; otherwise falls back to CPU.
+2. **PyTorch `nn.Module`**: Generates the full Python class structure.
+3. **`torch.compile(mode="max-autotune")`**: Tells the GPU to fuse operations for maximum speed.
+4. **Mixed Precision (`autocast` + `GradScaler`)**: Makes the GPU do math twice as fast using 16-bit floating point numbers without losing accuracy.
 
 ---
 
-## 5. Running the Program
+## 🏃 Step 5: Run Your Robot!
 
-You can execute the compiled script directly with Python:
+Now, run your compiled script:
 
 ```bash
-python hello_mnist_compiled.py
+python run_mnist.py
 ```
 
-Or compile and execute in a single command using TensorLoom's `run` action:
+Or do the compile-and-run in one quick step:
 
 ```bash
 python -m tensorloom run hello_mnist.tl
 ```
 
-Congratulations! You've just written, compiled, and executed your first TensorLoom model.
+You'll see your robot practicing through 5 epochs, getting smarter and smarter with every batch of numbers! 🧠✨
