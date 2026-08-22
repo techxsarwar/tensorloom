@@ -1,0 +1,35 @@
+// vision_transformer.nml — Vision Transformer (ViT)
+//
+// A Vision Transformer block with patch embedding via Conv2d,
+// multi-head self-attention, layer normalization, and a
+// classification head.
+//
+// Config values control image/patch dimensions:
+//   let vit = ViT(embed_dim=1024, num_heads=16, num_classes=100)
+
+@model ViT:
+    @config:
+        in_channels = 3
+        patch_size = 16
+        embed_dim = 768
+        num_heads = 12
+        num_classes = 1000
+
+    @layers:
+        patch_embed = Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        norm1       = LayerNorm(embed_dim)
+        attention   = MultiHeadAttention(embed_dim, num_heads)
+        norm2       = LayerNorm(embed_dim)
+        mlp_fc1     = Linear(embed_dim, embed_dim)
+        mlp_fc2     = Linear(embed_dim, num_classes)
+
+    @forward(x):
+        x = patch_embed(x)
+        x = norm1(x)
+        let residual = x
+        x = residual + attention(x)
+        x = norm2(x)
+        x = mlp_fc1(x)
+        x = relu(x)
+        x = mlp_fc2(x)
+        return x

@@ -3,6 +3,7 @@ pyproject.toml
 src/tensorloom/__init__.py
 src/tensorloom/__main__.py
 src/tensorloom/cli.py
+src/tensorloom/py.typed
 src/tensorloom.egg-info/PKG-INFO
 src/tensorloom.egg-info/SOURCES.txt
 src/tensorloom.egg-info/dependency_links.txt
@@ -11,6 +12,7 @@ src/tensorloom.egg-info/requires.txt
 src/tensorloom.egg-info/top_level.txt
 src/tensorloom/analyzer/__init__.py
 src/tensorloom/analyzer/optimizer.py
+src/tensorloom/analyzer/shape_inference.py
 src/tensorloom/analyzer/type_checker.py
 src/tensorloom/codegen/__init__.py
 src/tensorloom/codegen/code_emitter.py
@@ -28,6 +30,11 @@ src/tensorloom/stdlib/__init__.py
 src/tensorloom/stdlib/data.py
 src/tensorloom/stdlib/nn.py
 tests/test_codegen.py
+tests/test_distributed.py
 tests/test_e2e.py
 tests/test_lexer.py
+tests/test_nml.py
+tests/test_nml_import.py
 tests/test_parser.py
+tests/test_shape_inference.py
+tests/test_triton.py

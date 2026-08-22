@@ -1,0 +1,25 @@
+// lstm_seq2seq.nml — LSTM Encoder-Decoder
+//
+// A sequence-to-sequence model with embedding layers,
+// bidirectional LSTM encoder, and linear projection.
+//
+// Config values control vocabulary and hidden dimensions:
+//   let enc = LSTMEncoder(vocab_size=10000, hidden_dim=1024)
+
+@model LSTMEncoder:
+    @config:
+        vocab_size = 5000
+        embed_dim = 256
+        hidden_dim = 512
+        num_layers = 2
+
+    @layers:
+        embedding = Embedding(vocab_size, embed_dim)
+        lstm      = LSTM(embed_dim, hidden_dim, num_layers=num_layers, batch_first=true)
+        fc_out    = Linear(hidden_dim, vocab_size)
+
+    @forward(x):
+        x = embedding(x)
+        x = lstm(x)
+        x = fc_out(x)
+        return x

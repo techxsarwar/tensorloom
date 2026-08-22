@@ -1,0 +1,27 @@
+// resnet.nml — Residual Convolutional Block
+//
+// A canonical deep learning building block: the residual connection.
+// Conv2d -> BatchNorm -> ReLU -> Conv2d -> BatchNorm + skip connection.
+//
+// Config values are overridable at instantiation:
+//   let block = ResBlock(channels=128)
+
+@model ResBlock:
+    @config:
+        channels = 64
+
+    @layers:
+        conv1 = Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        bn1   = BatchNorm2d(channels)
+        conv2 = Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        bn2   = BatchNorm2d(channels)
+
+    @forward(x):
+        let residual = x
+        x = conv1(x)
+        x = bn1(x)
+        x = relu(x)
+        x = conv2(x)
+        x = bn2(x)
+        x = relu(x + residual)
+        return x
